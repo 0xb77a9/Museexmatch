@@ -36,9 +36,12 @@ namespace Museexmatch
             LyricsProviderName = lyricsProviderName;
 
             client.DefaultRequestHeaders.Remove("User-Agent");
-            client.DefaultRequestHeaders.Add("User-Agent", "Dalvik/2.1.0 (Linux; U; Android 13; Pixel 7 (Whatever))");
+            client.DefaultRequestHeaders.Add(
+                "User-Agent",
+                "Dalvik/2.1.0 (Linux; U; Android 13; Pixel 7 (Whatever))"
+            );
             client.DefaultRequestHeaders.Add("x-mxm-endpoint", "default");
-  
+
             if (File.Exists(Plugin.configFile))
             {
                 string data = File.ReadAllText(Plugin.configFile);
@@ -46,7 +49,9 @@ namespace Museexmatch
                 if (Util.PropertyExists(config, "allowedDistance"))
                     AllowedDistance = (int)config.allowedDistance;
                 if (Util.PropertyExists(config, "delimiters"))
-                    Delimiters = ((List<object>)config.delimiters).Select(x => char.Parse(x.ToString())).ToArray();
+                    Delimiters = ((List<object>)config.delimiters)
+                        .Select(x => char.Parse(x.ToString()))
+                        .ToArray();
                 if (Util.PropertyExists(config, "verifyAlbum"))
                     VerifyAlbum = (bool)config.verifyAlbum;
                 if (Util.PropertyExists(config, "addLyricsSource"))
@@ -62,13 +67,25 @@ namespace Museexmatch
                     HmacSHA1Key = config.hmacSHA1Key;
                 if (Util.PropertyExists(config, "apiURL"))
                     ApiURL = config.apiURL;
-                
+
                 if (Util.PropertyExists(config, "userToken"))
                     UserToken = config.userToken;
 
-                Logger.Info("Configuration file was used: allowedDistance={allowedDistance}, delimiters={delimiters}, verifyAlbum={verifyAlbum}, addLyricsSource={addLyricsSource}, trimTitle={trimTitle}, preferSyncedLyrics={preferSyncedLyrics}, onlySyncedLyrics={onlySyncedLyrics}", AllowedDistance, Delimiters, VerifyAlbum, AddLyricsSource, TrimTitle, PreferSyncedLyrics, OnlySyncedLyrics);
+                Logger.Info(
+                    "Configuration file was used: allowedDistance={allowedDistance}, delimiters={delimiters}, verifyAlbum={verifyAlbum}, addLyricsSource={addLyricsSource}, trimTitle={trimTitle}, preferSyncedLyrics={preferSyncedLyrics}, onlySyncedLyrics={onlySyncedLyrics}",
+                    AllowedDistance,
+                    Delimiters,
+                    VerifyAlbum,
+                    AddLyricsSource,
+                    TrimTitle,
+                    PreferSyncedLyrics,
+                    OnlySyncedLyrics
+                );
             }
-            else { Logger.Info("No configuration file was provided, defaults were used"); }
+            else
+            {
+                Logger.Info("No configuration file was provided, defaults were used");
+            }
             if (string.IsNullOrEmpty(UserToken))
             {
                 UserToken = GetUserToken();
@@ -84,11 +101,42 @@ namespace Museexmatch
 
                 Logger.Info("Got new user token");
             }
-           
         }
 
         private string GetUserToken()
         {
+            string dllDirectory = Path.GetDirectoryName(
+                System.Reflection.Assembly.GetExecutingAssembly().Location
+            );
+            string tokenFilePath = Path.Combine(dllDirectory, "userToken.json");
+
+            if (File.Exists(tokenFilePath))
+            {
+                try
+                {
+                    dynamic tokenData = Json.Parse<object>(File.ReadAllText(tokenFilePath));
+                    string existingToken = tokenData?.userToken;
+                    long createdAtUnix = (long)tokenData?.createdAt;
+
+                    DateTime createdAt = DateTimeOffset
+                        .FromUnixTimeSeconds(createdAtUnix)
+                        .UtcDateTime;
+
+                    if (
+                        !string.IsNullOrEmpty(existingToken)
+                        && (DateTime.UtcNow - createdAt).TotalMinutes <= 15
+                    )
+                    {
+                        Logger.Info("Using existing user token from file.");
+                        return existingToken;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warn("Failed to read or parse token file: {0}", ex.Message);
+                }
+            }
+
             NameValueCollection parameters = new NameValueCollection();
             parameters.Add("adv_id", Guid.NewGuid().ToString());
             parameters.Add("referal", "utm_source=google-play&utm_medium=organic");
@@ -98,14 +146,35 @@ namespace Museexmatch
             parameters.Add("guid", Util.GenerateHex(16));
             parameters.Add("lang", "en_US");
             parameters.Add("model", "manufacturer/Google brand/Pixel model/Whatever");
-            parameters.Add("timestamp", DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ssZ"));
+            parameters.Add("timestamp", DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ"));
 
             dynamic result = MusixmatchRequest("token.get", parameters);
-            string token = result.user_token;
-            return token;
+            string newToken = result.user_token;
+
+            var tokenDataToSave = new
+            {
+                userToken = newToken,
+                createdAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            };
+
+            try
+            {
+                File.WriteAllText(tokenFilePath, Json.Format(tokenDataToSave));
+                Logger.Info("New user token saved to file.");
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("Failed to save new token to file: {0}", ex.Message);
+            }
+
+            return newToken;
         }
 
-        private dynamic MusixmatchRequest(string path, NameValueCollection parameters = null, bool sign = true)
+        private dynamic MusixmatchRequest(
+            string path,
+            NameValueCollection parameters = null,
+            bool sign = true
+        )
         {
             string url = this.ApiURL + path;
             if (parameters == null)
@@ -131,10 +200,12 @@ namespace Museexmatch
                 task.Wait();
                 response = task.Result;
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                Logger.Error("Error while making API request: {0}", ex.Message);
                 throw;
             }
+
             dynamic result = null;
             try
             {
@@ -142,9 +213,17 @@ namespace Museexmatch
                 var task = Task.Run(() => response.Content.ReadAsStringAsync());
                 task.Wait();
                 content = task.Result;
+
+                Logger.Debug("API Response for {path}: {content}", path, content);
+
                 result = Json.Parse<object>(content);
             }
-            catch { throw; }
+            catch (Exception ex)
+            {
+                Logger.Error("Error while parsing API response: {0}", ex.Message);
+                throw;
+            }
+
             return result.message.body;
         }
 
@@ -154,30 +233,59 @@ namespace Museexmatch
             title = title.Trim();
             album = album.Trim();
 
-            if (TrimTitle) { title = Util.Trim(title); }
+            if (TrimTitle)
+            {
+                title = Util.Trim(title);
+            }
 
-            Logger.Info("Attempting to search for {aritst} - {title} ({album}) in tracks", artist, title, album);
+            Logger.Info(
+                "Attempting to search for {aritst} - {title} ({album}) in tracks",
+                artist,
+                title,
+                album
+            );
 
-            dynamic match = findInMatches(searchInTracks(artist, title, album), artist, title, album);
+            dynamic match = findInMatches(
+                searchInTracks(artist, title, album),
+                artist,
+                title,
+                album
+            );
 
             if (match == null && Delimiters.Length > 0)
             {
                 var editedArtist = artist;
 
-                foreach (char delimiter in Delimiters) editedArtist = editedArtist.Split(delimiter)[0].Trim();
+                foreach (char delimiter in Delimiters)
+                    editedArtist = editedArtist.Split(delimiter)[0].Trim();
 
                 if (editedArtist != artist)
                 {
-                    Logger.Info("Nothing found, attempting to search for {aritst} - {title} ({album}) in tracks", editedArtist, title, album);
+                    Logger.Info(
+                        "Nothing found, attempting to search for {aritst} - {title} ({album}) in tracks",
+                        editedArtist,
+                        title,
+                        album
+                    );
 
-                    match = findInMatches(searchInTracks(editedArtist, title, album), artist, title, album);
+                    match = findInMatches(
+                        searchInTracks(editedArtist, title, album),
+                        artist,
+                        title,
+                        album
+                    );
                 }
             }
 
             if (match == null)
             {
-                Logger.Info("Attempting to search for {aritst} - {title} ({album}) in macro", artist, title, album);
-                
+                Logger.Info(
+                    "Attempting to search for {aritst} - {title} ({album}) in macro",
+                    artist,
+                    title,
+                    album
+                );
+
                 match = findInMatches(searchMacro(artist, title, album), artist, title, album);
             }
 
@@ -185,25 +293,39 @@ namespace Museexmatch
             {
                 var editedArtist = artist;
 
-                foreach (char delimiter in Delimiters) editedArtist = editedArtist.Split(delimiter)[0].Trim();
+                foreach (char delimiter in Delimiters)
+                    editedArtist = editedArtist.Split(delimiter)[0].Trim();
 
                 if (editedArtist != artist)
                 {
-                    Logger.Info("Nothing found, attempting to search for {aritst} - {title} ({album}) in macro", editedArtist, title, album);
+                    Logger.Info(
+                        "Nothing found, attempting to search for {aritst} - {title} ({album}) in macro",
+                        editedArtist,
+                        title,
+                        album
+                    );
 
-                    match = findInMatches(searchMacro(editedArtist, title, album), artist, title, album);
+                    match = findInMatches(
+                        searchMacro(editedArtist, title, album),
+                        artist,
+                        title,
+                        album
+                    );
                 }
             }
 
-            if (match == null) { 
+            if (match == null)
+            {
                 Logger.Info("Nothing found at all");
                 return null;
             }
 
             string result = loadLyrics(match.track_id.ToString());
 
-            if (result != null) Logger.Info("Got a hit");
-            else Logger.Info("Match was found but no lyrics");
+            if (result != null)
+                Logger.Info("Got a hit");
+            else
+                Logger.Info("Match was found but no lyrics");
 
             return result;
         }
@@ -222,12 +344,11 @@ namespace Museexmatch
             req.Add("page_size", "100");
 
             dynamic searchResults = MusixmatchRequest("track.search", req);
-            
+
             var matches = searchResults.track_list;
 
             return matches;
         }
-
 
         private dynamic searchMacro(string artist, string title, string album)
         {
@@ -253,18 +374,31 @@ namespace Museexmatch
             foreach (var _match in matches)
             {
                 var match = _match.track;
-                if (match.has_lyrics != 1) continue;
+                if (match.has_lyrics != 1)
+                    continue;
 
-                if (VerifyAlbum && match.album_name.ToLower() != album.ToLower()) continue;
+                if (VerifyAlbum && match.album_name.ToLower() != album.ToLower())
+                    continue;
 
-                if (Util.ValidateResult(artist, title, match.artist.artist_name, match.track_name, AllowedDistance))
+                if (
+                    Util.ValidateResult(
+                        artist,
+                        title,
+                        match.artist.artist_name,
+                        match.track_name,
+                        AllowedDistance
+                    )
+                )
                     return match;
 
                 foreach (var _alias in match.artist.artist_alias_list)
                 {
                     var alias = _alias;
-                    if (_alias is ExpandoObject) alias = _alias.artist_alias;
-                    if (Util.ValidateResult(artist, title, alias, match.track_name, AllowedDistance))
+                    if (_alias is ExpandoObject)
+                        alias = _alias.artist_alias;
+                    if (
+                        Util.ValidateResult(artist, title, alias, match.track_name, AllowedDistance)
+                    )
                         return match;
                 }
             }
@@ -276,7 +410,6 @@ namespace Museexmatch
 
         private string loadLyrics(string trackId)
         {
-
             var req = new NameValueCollection();
             req.Add("track_id", trackId);
 
@@ -293,7 +426,12 @@ namespace Museexmatch
                     if (available > 0)
                     {
                         Logger.Info("Found synced lyrics");
-                        result = data["track.subtitles.get"].message.body.subtitle_list[0].subtitle.subtitle_body;
+                        result = data["track.subtitles.get"]
+                            .message
+                            .body
+                            .subtitle_list[0]
+                            .subtitle
+                            .subtitle_body;
                     }
                 }
                 catch (Exception ex)
@@ -303,7 +441,8 @@ namespace Museexmatch
             }
             if (string.IsNullOrEmpty(result))
             {
-                if (OnlySyncedLyrics) return null;
+                if (OnlySyncedLyrics)
+                    return null;
                 result = data["track.lyrics.get"].message.body.lyrics.lyrics_body;
 
                 if (AddLyricsSource)
