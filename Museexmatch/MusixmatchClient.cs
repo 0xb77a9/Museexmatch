@@ -1,6 +1,4 @@
-﻿using MusicBeePlugin;
-using NLog;
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.Dynamic;
@@ -8,6 +6,8 @@ using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Threading.Tasks;
+using MusicBeePlugin;
+using NLog;
 using Topten.JsonKit;
 
 namespace Museexmatch
@@ -31,6 +31,7 @@ namespace Museexmatch
         private bool TrimTitle = false;
         private bool PreferSyncedLyrics = false;
         private bool OnlySyncedLyrics = false;
+
         public MusixmatchClient(string lyricsProviderName = null)
         {
             LyricsProviderName = lyricsProviderName;
@@ -46,6 +47,7 @@ namespace Museexmatch
             {
                 string data = File.ReadAllText(Plugin.configFile);
                 dynamic config = Json.Parse<object>(data);
+
                 if (Util.PropertyExists(config, "allowedDistance"))
                     AllowedDistance = (int)config.allowedDistance;
                 if (Util.PropertyExists(config, "delimiters"))
@@ -84,8 +86,11 @@ namespace Museexmatch
             }
             else
             {
-                Logger.Info("No configuration file was provided, defaults were used");
+                Logger.Info("No configuration file was provided, creating one with the defaults");
+
+                CreateDefaultConfig(Plugin.configFile);
             }
+
             if (string.IsNullOrEmpty(UserToken))
             {
                 UserToken = GetUserToken();
@@ -103,20 +108,43 @@ namespace Museexmatch
             }
         }
 
+        private void CreateDefaultConfig(string configFilePath)
+        {
+            var defaultConfig = new
+            {
+                allowedDistance = AllowedDistance,
+                delimiters = Delimiters,
+                verifyAlbum = VerifyAlbum,
+                addLyricsSource = AddLyricsSource,
+                trimTitle = TrimTitle,
+                preferSyncedLyrics = PreferSyncedLyrics,
+                onlySyncedLyrics = OnlySyncedLyrics,
+                hmacSHA1Key = HmacSHA1Key,
+                apiURL = ApiURL,
+                userToken = (string)null,
+                createdAt = (long?)null,
+            };
+
+            try
+            {
+                File.WriteAllText(configFilePath, Json.Format(defaultConfig));
+                Console.WriteLine("Default configuration file created at: " + configFilePath);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Failed to create default configuration file: " + ex.Message);
+            }
+        }
+
         private string GetUserToken()
         {
-            string dllDirectory = Path.GetDirectoryName(
-                System.Reflection.Assembly.GetExecutingAssembly().Location
-            );
-            string tokenFilePath = Path.Combine(dllDirectory, "userToken.json");
-
-            if (File.Exists(tokenFilePath))
+            if (File.Exists(Plugin.configFile))
             {
                 try
                 {
-                    dynamic tokenData = Json.Parse<object>(File.ReadAllText(tokenFilePath));
-                    string existingToken = tokenData?.userToken;
-                    long createdAtUnix = (long)tokenData?.createdAt;
+                    dynamic config = Json.Parse<object>(File.ReadAllText(Plugin.configFile));
+                    string existingToken = config?.userToken;
+                    long createdAtUnix = config?.createdAt != null ? (long)config.createdAt : 0;
 
                     DateTime createdAt = DateTimeOffset
                         .FromUnixTimeSeconds(createdAtUnix)
@@ -127,15 +155,20 @@ namespace Museexmatch
                         && (DateTime.UtcNow - createdAt).TotalMinutes <= 15
                     )
                     {
-                        Logger.Info("Using existing user token from file.");
+                        Logger.Info("Using existing user token from configuration file.");
                         return existingToken;
                     }
                 }
                 catch (Exception ex)
                 {
-                    Logger.Warn("Failed to read or parse token file: {0}", ex.Message);
+                    Logger.Warn(
+                        "Failed to read or parse configuration file. Rolling back the file defaults. Error: {0}",
+                        ex.Message
+                    );
                 }
             }
+            else
+                CreateDefaultConfig(Plugin.configFile);
 
             NameValueCollection parameters = new NameValueCollection();
             parameters.Add("adv_id", Guid.NewGuid().ToString());
@@ -161,10 +194,11 @@ namespace Museexmatch
             {
                 File.WriteAllText(tokenFilePath, Json.Format(tokenDataToSave));
                 Logger.Info("New user token saved to file.");
+                Logger.Info("New user token saved to configuration file.");
             }
             catch (Exception ex)
             {
-                Logger.Warn("Failed to save new token to file: {0}", ex.Message);
+                Logger.Warn("Failed to save new token to configuration file: {0}", ex.Message);
             }
 
             return newToken;
